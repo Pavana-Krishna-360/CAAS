@@ -511,7 +511,11 @@
 # RAG.py
 
 import os
+import sys
 import torch
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 
 from dotenv import load_dotenv
 
@@ -525,6 +529,8 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM
 )
+
+import db
 
 
 # ============================================================
@@ -760,6 +766,20 @@ def retrieve_documents(
             k=TOP_K
         )
     )
+
+    # Enrich metadata from SQLite database (source of truth for pricing)
+    for document, distance in results:
+        raw_cid = document.metadata.get("chunk_id")
+        chunk_data = db.get_chunk(raw_cid)
+        if chunk_data:
+            document.metadata["chunk_id"] = chunk_data["chunk_id"]
+            document.metadata["raw_uniqueness"] = chunk_data["raw_uniqueness"]
+            document.metadata["normalized_uniqueness"] = chunk_data["normalized_uniqueness"]
+            document.metadata["frequency"] = chunk_data["frequency"]
+            document.metadata["log_frequency"] = chunk_data["log_frequency"]
+            document.metadata["normalized_frequency"] = chunk_data["normalized_frequency"]
+            document.metadata["royalty"] = chunk_data["royalty"]
+            document.metadata["price"] = chunk_data["price"]
 
     print(
         f"Retrieved {len(results)} chunks."
@@ -1185,30 +1205,64 @@ def display_retrieved_chunks(
         start=1
     ):
 
+        chunk_id = document.metadata.get(
+            "chunk_id",
+            f"chunk_{index}"
+        )
+
         page = document.metadata.get(
             "page",
             "Unknown"
         )
 
-        price = document.metadata.get(
+        raw_uniqueness = float(document.metadata.get(
+            "raw_uniqueness",
+            0.0
+        ))
+
+        normalized_uniqueness = float(document.metadata.get(
+            "normalized_uniqueness",
+            0.0
+        ))
+
+        frequency = int(document.metadata.get(
+            "frequency",
+            0
+        ))
+
+        log_frequency = float(document.metadata.get(
+            "log_frequency",
+            0.0
+        ))
+
+        normalized_frequency = float(document.metadata.get(
+            "normalized_frequency",
+            0.0
+        ))
+
+        royalty = float(document.metadata.get(
+            "royalty",
+            1.0
+        ))
+
+        price = float(document.metadata.get(
             "price",
-            "Unknown"
-        )
+            1.0
+        ))
 
         relevance = calculate_relevance(
             distance
         )
 
         ratio = (
-            relevance / float(price)
-            if price != "Unknown"
-            and float(price) > 0
-            else 0
+            relevance / price
+            if price > 0
+            else 0.0
         )
 
 
         print(
-            f"\nChunk {index}"
+            f"\nChunk: {chunk_id}"
         )
 
         print(
@@ -1224,7 +1278,31 @@ def display_retrieved_chunks(
         )
 
         print(
-            f"Price: ₹{float(price):.2f}"
+            f"Raw Uniqueness: {raw_uniqueness:.4f}"
+        )
+
+        print(
+            f"Normalized Uniqueness: {normalized_uniqueness:.4f}"
+        )
+
+        print(
+            f"Frequency: {frequency}"
+        )
+
+        print(
+            f"Log Frequency: {log_frequency:.4f}"
+        )
+
+        print(
+            f"Normalized Frequency: {normalized_frequency:.4f}"
+        )
+
+        print(
+            f"Royalty: ₹{royalty:.2f}"
+        )
+
+        print(
+            f"Price: ₹{price:.2f}"
         )
 
         print(
@@ -1396,50 +1474,20 @@ def main():
 
 
     # --------------------------------------------------------
-    # Calculate global minimum chunk cost
+    # Calculate global minimum chunk cost from SQLite
     # --------------------------------------------------------
 
-    all_metadata = (
-        vector_store
-        ._collection
-        .get(
-            include=["metadatas"]
-        )
-    )
+    conn = db.get_db_connection()
+    min_price_row = conn.execute("SELECT MIN(price) FROM chunks WHERE price > 0").fetchone()
+    conn.close()
 
-    all_prices = []
-
-    for metadata in (
-        all_metadata.get(
-            "metadatas",
-            []
-        )
-    ):
-
-        if metadata and "price" in metadata:
-
-            price = float(
-                metadata["price"]
-            )
-
-            if price > 0:
-
-                all_prices.append(
-                    price
-                )
-
-
-    if not all_prices:
-
+    if min_price_row is None or min_price_row[0] is None:
         raise ValueError(
-            "No chunk prices found in ChromaDB. "
-            "Please run ingest.py again."
+            "No chunk prices found in SQLite database. "
+            "Please run ingest.py first."
         )
 
-
-    minimum_chunk_cost = min(
-        all_prices
-    )
+    minimum_chunk_cost = float(min_price_row[0])
 
 
     print(
@@ -1606,6 +1654,11 @@ def main():
                 remaining_balance = (
                     BUDGET - spent
                 )
+
+                # Update usage frequency and dynamic prices in SQLite
+                selected_chunk_id = selected["document"].metadata.get("chunk_id")
+                if selected_chunk_id is not None:
+                    db.record_chunk_usage(selected_chunk_id)
 
                 print(
                     f"\nChunk selected by UCOSA."
