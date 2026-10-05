@@ -257,7 +257,7 @@ run_full_evaluation.run_all()
 ```bibtex
 @article{dcaas2026,
   title={DCAAS: Dynamic Cost-Aware Answer Synthesis in Limiting-Budget Context-as-a-Service},
-  author={Pavana Krishna and DeepMind Advanced Agentic Coding Pair},
+  author={Cheedella Rahul Sai Sudheer, Devulapalli Pavana Krishna and Gutta Jagan Mohan},
   journal={arXiv preprint},
   year={2026}
 }
